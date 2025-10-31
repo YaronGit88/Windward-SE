@@ -1,4 +1,4 @@
-@echo on
+@echo off
 
 :: Get date and time parts
 for /f "tokens=1-4 delims=:.," %%a in ("%time%") do (
