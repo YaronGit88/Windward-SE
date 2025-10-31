@@ -157,13 +157,10 @@ app.get('/fleets', async (req, res) => {
 app.get('/api/fleets', async (req, res) => {
   try {
     const data = app.locals.data ?? await app.locals.dataPromise;
-    const summaryfleets = data.fleets.map((f, i) => {
-      const fleetJsonId = getFleetJsonId(f) ?? `idx:${i}`;
-      return { fleetJsonId, name: getName(f), vesselsCount: data.fleetCounts.get(fleetJsonId) || 0 };
-    });
-    res.json(summaryfleets);
+    // Return the raw fleets array exactly as in fleets.json
+    return res.json(data.fleets);
   } catch {
-    res.status(500).json({ status: 'error' });
+    return res.status(500).json({ status: 'error' });
   }
 });
 
@@ -222,69 +219,199 @@ app.get('/api/fleets/:fleetJsonId/vessels/full', async (req, res) => {
   }
 });
 
-// expose by Filter vessels by name, flag, and/or mmsi (case-insensitive substring; AND across provided params)
+// Helper: fetch fleet vessels via internal HTTP call to keep single source of truth
+async function fetchFleetVesselsFullViaHttp(fleetJsonId) {
+  const http = require('http');
+  const port = process.env.PORT || 3010;
+  const urlPath = `/api/fleets/${encodeURIComponent(fleetJsonId)}/vessels/full`;
+  const options = { hostname: '127.0.0.1', port, path: urlPath, method: 'GET' };
+
+  return new Promise((resolve, reject) => {
+    const req = http.request(options, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => (body += chunk));
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(body);
+          const arr = Array.isArray(json?.vessels) ? json.vessels : (json?.data?.vessels ?? []);
+          resolve(arr);
+        } catch (e) {
+          reject(new Error(`Failed to parse fleet vessels response: ${e.message}`));
+        }
+      });
+    });
+    req.on('error', (e) => reject(new Error(`HTTP error: ${e.message}`)));
+    req.end();
+  });
+}
+
+// expose: Filter vessels by name, flag, and/or mmsi
+// - Substring match for values (case-insensitive)
+// - Per-field OR via repeated keys (?name=a&name=b) — no "||" parsing
+// - Flags: <field>IsNull, <field>IsEmpty (booleans)
+// - Across fields combination via op/operator/logic = 'and' (default) | 'or'
+// - Scope: optional fleetJsonId uses internal HTTP call to /api/fleets/:fleetJsonId/vessels/full
 app.get('/api/vessels/filter', async (req, res) => {
   try {
     const data = app.locals.data ?? await app.locals.dataPromise;
 
-    // Validate allowed query params
-    const allowed = new Set(['name', 'flag', 'mmsi']);
+    // Allowed params
+    const allowed = new Set([
+      'name', 'flag', 'mmsi',
+      'nameIsNull', 'flagIsNull', 'mmsiIsNull',
+      'nameIsEmpty', 'flagIsEmpty', 'mmsiIsEmpty',
+      'op', 'operator', 'logic',
+      'fleetJsonId',
+    ]);
     const invalidKeys = Object.keys(req.query).filter(k => !allowed.has(k));
     if (invalidKeys.length > 0) {
       return res.status(400).json({
         status: 'error',
         message: 'please use the api wth correct syntax',
-        hint: '/api/vessels/filter?name=maersk&flag=panama&mmsi=123456789'
+        hint: '/api/vessels/filter?fleetJsonId=FLEET123&name=maersk&op=or'
       });
     }
 
-    // Normalize inputs
-    const nameNeedle = typeof req.query.name === 'string' ? req.query.name.trim().toLowerCase() : '';
-    const flagNeedle = typeof req.query.flag === 'string' ? req.query.flag.trim().toLowerCase() : '';
-    const mmsiNeedle = typeof req.query.mmsi === 'string' ? req.query.mmsi.trim().toLowerCase() : '';
+    // Operator across fields
+    const opRaw = req.query.op ?? req.query.operator ?? req.query.logic ?? 'and';
+    const op = String(opRaw).trim().toLowerCase();
+    if (op !== 'and' && op !== 'or') {
+      return res.status(400).json({
+        status: 'error',
+        message: "invalid 'op' value. use 'and' or 'or'",
+        hint: '/api/vessels/filter?fleetJsonId=FLEET123&name=maersk&op=or'
+      });
+    }
 
-    // No filters provided → 404 not_found
-    if (!nameNeedle && !flagNeedle && !mmsiNeedle) {
+    // Scope: optional fleetJsonId (via internal HTTP call)
+    const fleetJsonIdRaw = req.query.fleetJsonId;
+    const fleetJsonIdStr = typeof fleetJsonIdRaw === 'string' ? String(fleetJsonIdRaw) : null;
+
+    // Helpers
+    const toArray = (v) => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
+    const normalizeNeedles = (val) => {
+      const arr = toArray(val);
+      const out = [];
+      for (let v of arr) {
+        if (v === null || v === undefined) continue;
+        const s = String(v).trim().toLowerCase();
+        if (s !== '') out.push(s);
+      }
+      return out;
+    };
+    const parseFlag = (val) => {
+      if (val === undefined) return false;
+      const arr = toArray(val);
+      return arr.some(item => {
+        if (item === '' || item === null || item === undefined) return true;
+        const s = String(item).trim().toLowerCase();
+        if (['1', 'true', 'yes', 'on'].includes(s)) return true;
+        if (['0', 'false', 'no', 'off'].includes(s)) return false;
+        return true;
+      });
+    };
+    const normalizeStr = (v) => {
+      if (v === null || v === undefined) return null;
+      return String(v).trim().toLowerCase();
+    };
+    const valuesMatch = (valueStr, needles) => {
+      if (!needles || needles.length === 0) return false;
+      if (valueStr === null) return false;
+      return needles.some(n => valueStr.includes(n));
+    };
+    const fieldMatches = (valueStr, needles, isNullFlag, isEmptyFlag) => {
+      const parts = [];
+      if (needles.length > 0) parts.push(valuesMatch(valueStr, needles));
+      if (isNullFlag) parts.push(valueStr === null);
+      if (isEmptyFlag) parts.push(valueStr !== null && valueStr.length === 0);
+      return parts.length > 0 ? parts.some(Boolean) : null;
+    };
+    // Treat literal value "null" as IsNull flag
+    const consumeNullToken = (needles, currentIsNullFlag) => {
+      const hasNullToken = needles.includes('null');
+      const filtered = hasNullToken ? needles.filter(n => n !== 'null') : needles;
+      return { filtered, isNull: currentIsNullFlag || hasNullToken };
+    };
+
+    // Collect values per field
+    const nameNeedles = normalizeNeedles(req.query.name);
+    const flagNeedles = normalizeNeedles(req.query.flag);
+    const mmsiNeedles = normalizeNeedles(req.query.mmsi);
+
+    // Flags per field
+    const nameIsNull = parseFlag(req.query.nameIsNull);
+    const flagIsNull = parseFlag(req.query.flagIsNull);
+    const mmsiIsNull = parseFlag(req.query.mmsiIsNull);
+
+    const nameIsEmpty = parseFlag(req.query.nameIsEmpty);
+    const flagIsEmpty = parseFlag(req.query.flagIsEmpty);
+    const mmsiIsEmpty = parseFlag(req.query.mmsiIsEmpty);
+
+    // Apply "null" token to flags
+    const { filtered: nameNeedlesAdj, isNull: nameIsNullAdj } = consumeNullToken(nameNeedles, nameIsNull);
+    const { filtered: flagNeedlesAdj, isNull: flagIsNullAdj } = consumeNullToken(flagNeedles, flagIsNull);
+    const { filtered: mmsiNeedlesAdj, isNull: mmsiIsNullAdj } = consumeNullToken(mmsiNeedles, mmsiIsNull);
+
+    // Scope candidate list by fleetJsonId via internal HTTP call (do this BEFORE checking anyFilters)
+    let sourceVessels = data.vessels;
+    if (fleetJsonIdStr) {
+      try {
+        sourceVessels = await fetchFleetVesselsFullViaHttp(fleetJsonIdStr);
+      } catch (err) {
+        console.error('Fleet scope fetch failed:', err);
+        return res.status(502).json({
+          status: 'error',
+          message: 'Unable to scope by fleetJsonId (internal fetch failed)',
+          detail: err.message
+        });
+      }
+    }
+
+    // Determine if there are any actual filters (values or flags).
+    const anyFilters =
+      nameNeedlesAdj.length || flagNeedlesAdj.length || mmsiNeedlesAdj.length ||
+      nameIsNullAdj || flagIsNullAdj || mmsiIsNullAdj ||
+      nameIsEmpty || flagIsEmpty || mmsiIsEmpty;
+
+    // NEW: If there are no filters but fleetJsonId is provided, return the scoped fleet vessels.
+    if (!anyFilters && fleetJsonIdStr) {
+      if (!sourceVessels || sourceVessels.length === 0) {
+        return res.status(404).json({ status: 'not_found', message: 'No vessels found for this fleet' });
+      }
+      return res.json(sourceVessels);
+    }
+
+    // Otherwise, if there are no filters and no fleet scope, reject.
+    if (!anyFilters) {
       return res.status(404).json({
         status: 'not_found',
         message: "couldn't find any data. please check your filter paramters.",
-        hint: '/api/vessels/filter?name=maersk&flag=panama&mmsi=123456789'
+        hint: '/api/vessels/filter?fleetJsonId=FLEET123&name=maersk&name=msc&op=or'
       });
     }
 
-    // Helpers
-    const normalizeStr = (v) => {
-      if (v === null || v === undefined) return null;
-      const s = String(v).trim().toLowerCase();
-      return s;
-    };
-    const matchesNeedle = (valueStr, needle) => {
-      if (!needle) return true; // no filter for this field
-      if (needle === 'null') {
-        // Special: when searching "null", match literal "null" AND nullish fields
-        if (valueStr === null) return true;
-        return valueStr.includes('null');
-      }
-      if (valueStr === null) return false;
-      return valueStr.includes(needle);
-    };
-
-    // Access raw fields without forcing to ""
     const getRawName = (v) => v?.name ?? v?.vesselName ?? v?.title ?? null;
     const getRawFlag = (v) => v?.flag ?? v?.country ?? v?.Flag ?? null;
     const getRawMmsi = (v) => v?.mmsi ?? v?.MMSI ?? v?.mmsi_number ?? v?.mmsiNumber ?? null;
 
-    // Perform the AND-combined filter across provided params
-    const matches = data.vessels.filter((v) => {
+    // Apply filters
+    const matches = sourceVessels.filter((v) => {
       const nm = normalizeStr(getRawName(v));
       const fg = normalizeStr(getRawFlag(v));
       const mm = normalizeStr(getRawMmsi(v));
 
-      if (!matchesNeedle(nm, nameNeedle)) return false;
-      if (!matchesNeedle(fg, flagNeedle)) return false;
-      if (!matchesNeedle(mm, mmsiNeedle)) return false;
+      const nameChk = fieldMatches(nm, nameNeedlesAdj, nameIsNullAdj, nameIsEmpty);
+      const flagChk = fieldMatches(fg, flagNeedlesAdj, flagIsNullAdj, flagIsEmpty);
+      const mmsiChk = fieldMatches(mm, mmsiNeedlesAdj, mmsiIsNullAdj, mmsiIsEmpty);
 
-      return true;
+      const checks = [];
+      if (nameChk !== null) checks.push(nameChk);
+      if (flagChk !== null) checks.push(flagChk);
+      if (mmsiChk !== null) checks.push(mmsiChk);
+
+      if (checks.length === 0) return false;
+      return op === 'or' ? checks.some(Boolean) : checks.every(Boolean);
     });
 
     if (matches.length === 0) {
