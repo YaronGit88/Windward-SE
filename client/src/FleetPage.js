@@ -10,6 +10,13 @@ function FleetPage() {
   const [sortAsc, setSortAsc] = useState(true);
   const navigate = useNavigate();
 
+  // Display helper: render "N/A" for null/undefined/empty string
+  const display = (v) => {
+    if (v === null || v === undefined) return "N/A";
+    const s = typeof v === "string" ? v.trim() : String(v);
+    return s === "" ? "N/A" : s;
+  };
+
   useEffect(() => {
     document.title = "Fleet page";
     fetch(`/api/fleets/${fleetJsonId}/vessels/full`)
@@ -37,8 +44,10 @@ function FleetPage() {
   };
 
   const sortedVessels = [...vessels].sort((a, b) => {
-    if (a[sortKey] < b[sortKey]) return sortAsc ? -1 : 1;
-    if (a[sortKey] > b[sortKey]) return sortAsc ? 1 : -1;
+    const av = a?.[sortKey] ?? "";
+    const bv = b?.[sortKey] ?? "";
+    if (av < bv) return sortAsc ? -1 : 1;
+    if (av > bv) return sortAsc ? 1 : -1;
     return 0;
   });
 
@@ -57,6 +66,12 @@ function FleetPage() {
               Name {sortKey === "name" ? (sortAsc ? "▲" : "▼") : ""}
             </th>
             <th
+              style={{ cursor: "pointer", background: sortKey === "flag" ? "#eee" : undefined }}
+              onClick={() => handleSort("flag")}
+            >
+              Flag {sortKey === "flag" ? (sortAsc ? "▲" : "▼") : ""}
+            </th>
+            <th
               style={{ cursor: "pointer", background: sortKey === "mmsi" ? "#eee" : undefined }}
               onClick={() => handleSort("mmsi")}
             >
@@ -71,13 +86,20 @@ function FleetPage() {
           </tr>
         </thead>
         <tbody>
-          {sortedVessels.map((vessel, idx) => (
-            <tr key={vessel._id || vessel.id || idx}>
-              <td>{vessel.name}</td>
-              <td>{vessel.mmsi}</td>
-              <td>{vessel._id || vessel.id}</td>
-            </tr>
-          ))}
+          {sortedVessels.map((vessel, idx) => {
+            const name = vessel?.name ?? vessel?.vesselName ?? vessel?.title ?? "";
+            const flag = vessel?.flag ?? vessel?.country ?? vessel?.Flag ?? "";
+            const mmsi = vessel?.mmsi ?? vessel?.MMSI ?? vessel?.mmsi_number ?? vessel?.mmsiNumber ?? "";
+            const idVal = vessel?._id ?? vessel?.id ?? "";
+            return (
+              <tr key={vessel?._id || vessel?.id || idx}>
+                <td>{display(name)}</td>
+                <td>{display(flag)}</td>
+                <td>{display(mmsi)}</td>
+                <td>{display(idVal)}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       <FleetMap vessels={vessels} />

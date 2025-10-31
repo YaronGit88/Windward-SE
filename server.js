@@ -222,7 +222,69 @@ app.get('/api/fleets/:fleetJsonId/vessels/full', async (req, res) => {
   }
 });
 
+// expose by Filter vessels by name, flag, and/or mmsi (case-insensitive substring; AND across provided params)
+app.get('/api/vessels/filter', async (req, res) => {
+  try {
+    const data = app.locals.data ?? await app.locals.dataPromise;
 
+    // Validate allowed query params
+    const allowed = new Set(['name', 'flag', 'mmsi']);
+    const invalidKeys = Object.keys(req.query).filter(k => !allowed.has(k));
+    if (invalidKeys.length > 0) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'please use the api wth correct syntax',
+        hint: '/api/vessels/filter?name=maersk&flag=panama&mmsi=123456789'
+      });
+    }
+
+    // Normalize inputs
+    const nameNeedle = typeof req.query.name === 'string' ? req.query.name.trim().toLowerCase() : '';
+    const flagNeedle = typeof req.query.flag === 'string' ? req.query.flag.trim().toLowerCase() : '';
+    const mmsiNeedle = typeof req.query.mmsi === 'string' ? req.query.mmsi.trim().toLowerCase() : '';
+
+    // No filters provided → 404 not_found (as requested earlier)
+    if (!nameNeedle && !flagNeedle && !mmsiNeedle) {
+      return res.status(404).json({
+        status: 'not_found',
+        message: "couldn't find any data. please check your filter paramters.",
+        hint: '/api/vessels/filter?name=maersk&flag=panama&mmsi=123456789'
+      });
+    }
+
+    // Field accessors
+    const getName = (v) => String(v?.name ?? v?.vesselName ?? v?.title ?? '').toLowerCase();
+    const getFlag = (v) => String(v?.flag ?? v?.country ?? v?.Flag ?? '').toLowerCase();
+    const getMmsi = (v) => String(v?.mmsi ?? v?.MMSI ?? v?.mmsi_number ?? v?.mmsiNumber ?? '').toLowerCase();
+
+    // AND filter
+    const matches = data.vessels.filter((v) => {
+      const nm = getName(v);
+      const fg = getFlag(v);
+      const mm = getMmsi(v);
+      if (nameNeedle && !nm.includes(nameNeedle)) return false;
+      if (flagNeedle && !fg.includes(flagNeedle)) return false;
+      if (mmsiNeedle && !mm.includes(mmsiNeedle)) return false;
+      return true;
+    });
+
+    if (matches.length === 0) {
+      return res.status(404).json({
+        status: 'not_found',
+        message: "couldn't find any data. please check your filter paramters.",
+        hint: '/api/vessels/filter?name=maersk&flag=panama&mmsi=123456789'
+      });
+    }
+
+    return res.json(matches);
+  } catch (err) {
+    console.error('Error in /api/vessels/filter:', err);
+    return res.status(500).json({
+      status: 'error',
+      message: 'please use the api wth correct syntax'
+    });
+  }
+});
 
 // optional reload endpoint
 app.post('/reload', async (req, res) => {
