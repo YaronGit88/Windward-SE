@@ -243,7 +243,7 @@ app.get('/api/vessels/filter', async (req, res) => {
     const flagNeedle = typeof req.query.flag === 'string' ? req.query.flag.trim().toLowerCase() : '';
     const mmsiNeedle = typeof req.query.mmsi === 'string' ? req.query.mmsi.trim().toLowerCase() : '';
 
-    // No filters provided → 404 not_found (as requested earlier)
+    // No filters provided → 404 not_found
     if (!nameNeedle && !flagNeedle && !mmsiNeedle) {
       return res.status(404).json({
         status: 'not_found',
@@ -252,27 +252,45 @@ app.get('/api/vessels/filter', async (req, res) => {
       });
     }
 
-    // Field accessors
-    const getName = (v) => String(v?.name ?? v?.vesselName ?? v?.title ?? '').toLowerCase();
-    const getFlag = (v) => String(v?.flag ?? v?.country ?? v?.Flag ?? '').toLowerCase();
-    const getMmsi = (v) => String(v?.mmsi ?? v?.MMSI ?? v?.mmsi_number ?? v?.mmsiNumber ?? '').toLowerCase();
+    // Helpers
+    const normalizeStr = (v) => {
+      if (v === null || v === undefined) return null;
+      const s = String(v).trim().toLowerCase();
+      return s;
+    };
+    const matchesNeedle = (valueStr, needle) => {
+      if (!needle) return true; // no filter for this field
+      if (needle === 'null') {
+        // Special: when searching "null", match literal "null" AND nullish fields
+        if (valueStr === null) return true;
+        return valueStr.includes('null');
+      }
+      if (valueStr === null) return false;
+      return valueStr.includes(needle);
+    };
 
-    // AND filter
+    // Access raw fields without forcing to ""
+    const getRawName = (v) => v?.name ?? v?.vesselName ?? v?.title ?? null;
+    const getRawFlag = (v) => v?.flag ?? v?.country ?? v?.Flag ?? null;
+    const getRawMmsi = (v) => v?.mmsi ?? v?.MMSI ?? v?.mmsi_number ?? v?.mmsiNumber ?? null;
+
+    // Perform the AND-combined filter across provided params
     const matches = data.vessels.filter((v) => {
-      const nm = getName(v);
-      const fg = getFlag(v);
-      const mm = getMmsi(v);
-      if (nameNeedle && !nm.includes(nameNeedle)) return false;
-      if (flagNeedle && !fg.includes(flagNeedle)) return false;
-      if (mmsiNeedle && !mm.includes(mmsiNeedle)) return false;
+      const nm = normalizeStr(getRawName(v));
+      const fg = normalizeStr(getRawFlag(v));
+      const mm = normalizeStr(getRawMmsi(v));
+
+      if (!matchesNeedle(nm, nameNeedle)) return false;
+      if (!matchesNeedle(fg, flagNeedle)) return false;
+      if (!matchesNeedle(mm, mmsiNeedle)) return false;
+
       return true;
     });
 
     if (matches.length === 0) {
       return res.status(404).json({
         status: 'not_found',
-        message: "couldn't find any data. please check your filter paramters.",
-        hint: '/api/vessels/filter?name=maersk&flag=panama&mmsi=123456789'
+        message: "Syntax is correct but couldn't find any data. please check your filter paramters.",
       });
     }
 
