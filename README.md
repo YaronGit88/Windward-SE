@@ -1,7 +1,9 @@
-#Windows 
-extract to  "C:\Visual Studio Projects\Windward SE"
-cd "C:\Visual Studio Projects\Windward SE"
-start npm start 
+#WINDOWS  
+1) extract to  "C:\Visual Studio Projects\Windward SE"
+2) cd "C:\Visual Studio Projects\Windward SE"
+3) start npm start
+
+
 
 # Getting Started with Create React App
 
