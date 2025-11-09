@@ -6,13 +6,13 @@ function App() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    fetch("/api/fleets")
+    fetch("/fleets")
       .then((res) => {
         if (!res.ok) throw new Error("Failed to fetch fleets");
         return res.json();
       })
-      .then(data => {
-        setFleets(data.fleets || data);
+      .then(json => {
+        setFleets(json?.data?.fleets || []);
       })
       .catch((err) => setError(err.message));
   }, []);

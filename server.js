@@ -3,6 +3,7 @@ const express = require('express');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
+const { registerRoutesListing } = require('./allroutes'); // ensure this is allroutes, not routes-inspector
 
 const app = express();
 app.use(express.json());
@@ -431,7 +432,10 @@ app.get('/api/vessels/filter', async (req, res) => {
   }
 });
 
-// optional reload endpoint
+// Register /api/allroutes using source-scan from a separate module
+registerRoutesListing(app, __filename, '/api/allroutes');
+
+// optional reload endpoint -refresh data from JSON files
 app.post('/reload', async (req, res) => {
   try {
     const data = await loadData();
