@@ -1,3 +1,8 @@
+#Windows 
+extract to  "C:\Visual Studio Projects\Windward SE"
+cd "C:\Visual Studio Projects\Windward SE"
+start npm start 
+
 # Getting Started with Create React App
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
